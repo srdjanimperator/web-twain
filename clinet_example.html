@@ -1,0 +1,32 @@
+<!DOCTYPE html>
+<html>
+  <head> </head>
+  <body>
+      <button onclick="doSend('Test')" type="button">Test</button>
+    <script>
+      var wsUri = "ws://127.0.0.1:8083";
+      var ws = new WebSocket(wsUri);
+
+      console.log(ws);
+      ws.onopen = function (e) {
+        console.log("CONNECTED");
+      };
+      ws.onclose = function (e) {
+        console.log("DISCONNECTED");
+      };
+
+      ws.onmessage = function (e) {
+        console.log("RESPONSE: " + e.data);
+      };
+
+      ws.onerror = function (e) {
+        console.log("ERROR: " + e.data);
+      };
+
+      function doSend(message) {
+        console.log("SENT: " + message);
+        ws.send(message);
+      }
+    </script>
+  </body>
+</html>
