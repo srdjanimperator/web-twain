@@ -68,18 +68,18 @@
     <None Include="App.config" />
   </ItemGroup>
   <ItemGroup>
-    <ProjectReference Include="..\..\ntwain\src\NTwain\NTwain.csproj">
-      <Project>{0c5a6fb1-0282-4d61-8354-68deb1515001}</Project>
-      <Name>NTwain</Name>
-    </ProjectReference>
-  </ItemGroup>
-  <ItemGroup>
     <EmbeddedResource Include="ProjectInstaller.resx">
       <DependentUpon>ProjectInstaller.cs</DependentUpon>
     </EmbeddedResource>
     <EmbeddedResource Include="TwainService.resx">
       <DependentUpon>TwainService.cs</DependentUpon>
     </EmbeddedResource>
+  </ItemGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\..\NTwain\NTwain.csproj">
+      <Project>{0c5a6fb1-0282-4d61-8354-68deb1515001}</Project>
+      <Name>NTwain</Name>
+    </ProjectReference>
   </ItemGroup>
   <Import Project="$(MSBuildToolsPath)\Microsoft.CSharp.targets" />
 </Project>
