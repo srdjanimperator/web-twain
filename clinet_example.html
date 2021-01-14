@@ -2,7 +2,9 @@
 <html>
   <head> </head>
   <body>
-      <button onclick="doSend('Test')" type="button">Test</button>
+      <input type="text" id="txt">
+      <button onclick="doSend(document.getElementById('txt').value)" type="button">Test</button>
+      <img id="scannedImage" />
     <script>
       var wsUri = "ws://127.0.0.1:8083";
       var ws = new WebSocket(wsUri);
@@ -10,6 +12,7 @@
       console.log(ws);
       ws.onopen = function (e) {
         console.log("CONNECTED");
+        doSend("TEST MSG")
       };
       ws.onclose = function (e) {
         console.log("DISCONNECTED");
@@ -17,6 +20,11 @@
 
       ws.onmessage = function (e) {
         console.log("RESPONSE: " + e.data);
+        if (e.data instanceof Blob) {
+          var objectURL = URL.createObjectURL(e.data);
+          console.log("Image received")
+          document.getElementById("scannedImage").src = objectURL;
+        }
       };
 
       ws.onerror = function (e) {

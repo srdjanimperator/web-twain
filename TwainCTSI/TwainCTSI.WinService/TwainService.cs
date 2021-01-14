@@ -17,7 +17,7 @@ using System.Threading.Tasks;
 
 using System.IO;
 using System.Drawing;
-
+using vtortola.WebSockets;
 
 namespace TwainCTSI.WinService
 {
@@ -26,25 +26,32 @@ namespace TwainCTSI.WinService
         string ip = "127.0.0.1";
         int port = 8083;
 
-        TcpClient client;
-        NetworkStream stream;
+        WebSocket client;
+        WebSocketMessageReadStream stream;
+
+        static TwainSession twain = null;
+        const string SAMPLE_SOURCE = "TWAIN2 FreeImage Software Scanner";
 
         void startWebSocketServer()
         {
             try
             {
-                var server = new TcpListener(IPAddress.Parse(ip), port);
-                server.Start();
+                var server = new WebSocketListener(new IPEndPoint(IPAddress.Parse(ip), port));
+                server.Standards.RegisterStandard(new WebSocketFactoryRfc6455());
+                server.StartAsync();
+
                 eventLog1.WriteEntry("Server has started on " + ip + " :" + port + " , Waiting for a connection...");
 
-                client = server.AcceptTcpClient();
-                stream = client.GetStream();
+                client = server.AcceptWebSocketAsync(CancellationToken.None).Result;
+
+                eventLog1.WriteEntry("Client connected");
 
                 Loop();
             }
             catch (Exception e)
             {
-                eventLog1.WriteEntry("Error starting tcp server! " + e.Message);
+                eventLog1.WriteEntry("Error starting tcp server!" + e.Message);
+                eventLog1.WriteEntry("Error starting tcp server!" + e.StackTrace);
             }
         }
 
@@ -61,9 +68,6 @@ namespace TwainCTSI.WinService
             eventLog1.Log = "TWAIN Log";
         }
 
-        TwainSession twain;
-        const string SAMPLE_SOURCE = "TWAIN2 FreeImage Software Scanner";
-
         protected override void OnStart(string[] args)
         {
             eventLog1.WriteEntry("TwainService starting...");
@@ -75,7 +79,7 @@ namespace TwainCTSI.WinService
                 }
                 catch (Exception ex)
                 {
-                    eventLog1.WriteEntry("ERROR: " + ex.ToString());
+                    eventLog1.WriteEntry($"ERROR1: {ex.Message} - {ex.StackTrace}");
                 }
             });
         }
@@ -85,111 +89,114 @@ namespace TwainCTSI.WinService
         {
             while (true)
             {
-                while (!stream.DataAvailable) ;
-                while (client.Available < 3) ; // match against "get"
-
-                byte[] bytes = new byte[client.Available];
-                stream.Read(bytes, 0, client.Available);
-                string s = Encoding.UTF8.GetString(bytes);
-
-                if (Regex.IsMatch(s, "^GET", RegexOptions.IgnoreCase))
+                stream = client?.ReadMessageAsync(CancellationToken.None).Result;
+                if (stream?.MessageType == WebSocketMessageType.Text)
                 {
-                    try
+                    using (var sr = new StreamReader(stream, Encoding.UTF8))
                     {
-                        //eventLog1.WriteEntry("=====Handshaking from client=====\n" + s);
-                        string swk = Regex.Match(s, "Sec-WebSocket-Key: (.*)").Groups[1].Value.Trim();
-                        string swka = swk + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
-                        byte[] swkaSha1 = System.Security.Cryptography.SHA1.Create().ComputeHash(Encoding.UTF8.GetBytes(swka));
-                        string swkaSha1Base64 = Convert.ToBase64String(swkaSha1);
+                        var msg = sr.ReadToEndAsync().Result;
 
-                        byte[] response = Encoding.UTF8.GetBytes(
-                            "HTTP/1.1 101 Switching Protocols\r\n" +
-                            "Connection: Upgrade\r\n" +
-                            "Upgrade: websocket\r\n" +
-                            "Sec-WebSocket-Accept: " + swkaSha1Base64 + "\r\n\r\n");
+                        eventLog1.WriteEntry($"Got command: {msg}");
+                        SendMessage($"Echo command: {msg}");
 
-                        stream.Write(response, 0, response.Length);
-
-                        eventLog1.WriteEntry("A client connected.");
-
-                        var res = EncodeOutgoingMessage("Hello there");
-                        stream.Write(res, 0, res.Length);
-
-                        DoTwainWork();
-                    }
-                    catch (Exception ex)
-                    {
-                        eventLog1.WriteEntry("Error in while loop 1: " + ex.Message + "-" + ex.StackTrace);
+                        if (msg.StartsWith("twain_"))
+                        {
+                            DoTwainWork(msg.Split('_')[1]);
+                        }
                     }
                 }
-                else
-                {
-                    try {
-                        bool fin = (bytes[0] & 0b10000000) != 0,
-                            mask = (bytes[1] & 0b10000000) != 0; // must be true, "All messages from the client to the server have this bit set"
-
-                        int opcode = bytes[0] & 0b00001111, // expecting 1 - text message
-                            msglen = bytes[1] - 128, // & 0111 1111
-                            offset = 2;
-
-                        if (msglen == 126)
-                        {
-                            // was ToUInt16(bytes, offset) but the result is incorrect
-                            msglen = BitConverter.ToUInt16(new byte[] { bytes[3], bytes[2] }, 0);
-                            offset = 4;
-                        }
-                        else if (msglen == 127)
-                        {
-                            eventLog1.WriteEntry("TODO: msglen == 127, needs qword to store msglen");
-                            // i don't really know the byte order, please edit this
-                            // msglen = BitConverter.ToUInt64(new byte[] { bytes[5], bytes[4], bytes[3], bytes[2], bytes[9], bytes[8], bytes[7], bytes[6] }, 0);
-                            // offset = 10;
-                        }
-
-                        if (msglen == 0)
-                            eventLog1.WriteEntry("msglen == 0");
-                        else if (mask)
-                        {
-                            byte[] decoded = new byte[msglen];
-                            byte[] masks = new byte[4] { bytes[offset], bytes[offset + 1], bytes[offset + 2], bytes[offset + 3] };
-                            offset += 4;
-
-                            for (int i = 0; i < msglen; ++i)
-                                decoded[i] = (byte)(bytes[offset + i] ^ masks[i % 4]);
-
-                            string text = Encoding.UTF8.GetString(decoded);
-                            eventLog1.WriteEntry(text);
-                        }
-                        else
-                            eventLog1.WriteEntry("mask bit not set");
-                    }
-                    catch (Exception ex)
-                    {
-                        eventLog1.WriteEntry("Error in while loop 2: " + ex.Message + "-" + ex.StackTrace);
-                    }
-                }
-
             }
         }
 
-        void DoWork()
+        void SendMessage(string msg)
+        {
+            using (var messageWriterStream = client.CreateMessageWriter(WebSocketMessageType.Text))
+            {
+                using (var sw = new StreamWriter(messageWriterStream, Encoding.UTF8))
+                {
+                    sw.WriteAsync(msg);
+                    eventLog1.WriteEntry($"Msg sent: {msg}");
+                }
+            }
+        }
+
+        async void SendBinaryMessage(Stream bytes)
         {
             try
             {
-                DoTwainWork();
+                using (var messageWriter = client.CreateMessageWriter(WebSocketMessageType.Binary))
+                {
+                    await bytes.CopyToAsync(messageWriter);
+                    eventLog1.WriteEntry($"Sending file!");
+                }
             }
             catch (Exception ex)
             {
-                eventLog1.WriteEntry("ERROR: " + ex.ToString());
+                eventLog1.WriteEntry($"SendBinaryMessage error: {ex.Message} \n {ex.StackTrace}");
             }
         }
 
-        void DoTwainWork()
+        static string _cmd;
+        void DoTwainWork(string cmd)
+        {
+            _cmd = cmd;
+            eventLog1.WriteEntry($"Executin twain command: {cmd}");
+
+            if (twain == null) InitTwain();
+
+            ReturnCode rc;
+            try
+            {
+                if (twain.State < 3)
+                {
+                    rc = twain.Open();
+                    if (rc != ReturnCode.Success)
+                    {
+                        eventLog1.WriteEntry("Failed to open dsm with rc=" + rc);
+                        return;
+                    }
+                }
+
+                if (cmd.Equals("list"))
+                {
+                    var response = string.Join(", ", twain.Select(device => device.Name).ToList());
+                    SendMessage(response);
+                }
+                else if (cmd.StartsWith("img"))
+                {
+                    var hit = twain.FirstOrDefault(s => string.Equals(s.Name, SAMPLE_SOURCE));
+                    if (hit == null)
+                    {
+                        eventLog1.WriteEntry("The sample source \"" + SAMPLE_SOURCE + "\" is not installed.");
+                        twain.Close();
+                    }
+                    else
+                    {
+                        rc = hit.Open();
+
+                        if (rc == ReturnCode.Success)
+                        {
+                            eventLog1.WriteEntry("Starting capture from the sample source...");
+                            rc = hit.Enable(SourceEnableMode.NoUI, false, IntPtr.Zero);
+                        }
+                        else
+                        {
+                            twain.Close();
+                        }
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                eventLog1.WriteEntry("Error opening twain: " + ex.Message);
+            }
+        }
+
+        void InitTwain()
         {
             try
             {
                 eventLog1.WriteEntry("Getting ready to do twain stuff on thread " + Thread.CurrentThread.ManagedThreadId);
-                //Thread.Sleep(1000);
                 twain = new TwainSession(TWIdentity.CreateFromAssembly(DataGroups.Image, Assembly.GetExecutingAssembly()));
                 twain.TransferReady += (s, e) =>
                 {
@@ -203,44 +210,19 @@ namespace TwainCTSI.WinService
 
                         try
                         {
-                            byte[] msg = EncodeOutgoingMessage(e.DataSource.Name);
+                            Stream imgStream = e.GetNativeImageStream();
 
-                            stream.Write(msg, 0, msg.Length);
-                            stream.Flush();
-
-                            eventLog1.WriteEntry("Attempting to read the image");
-
-                            Stream imgStr = e.GetNativeImageStream();
-
-                            if (imgStr != null)
+                            if (imgStream != null)
                             {
-                                eventLog1.WriteEntry("Attempting to read the image 1, length:" + imgStr.Length);
-
-                                var imglen = EncodeOutgoingMessage("Img length:" + imgStr.Length.ToString());
-                                stream.Write(imglen, 0, imglen.Length);
-                                stream.Flush();
-
-                                using (var memoryStream = new MemoryStream())
+                                if (_cmd == "imglen") SendMessage(imgStream.Length.ToString());
+                                else if (_cmd == "img")
                                 {
-                                    // !!!
-                                    imgStr.CopyTo(memoryStream);
-                                    var imgBytes = memoryStream.ToArray();
-                                    var b64img = Convert.ToBase64String(imgBytes);
-                                    var preparedBytes = EncodeOutgoingMessage(b64img);
-                                    stream.Write(preparedBytes, 0, preparedBytes.Length);
-                                    stream.Flush();
-                                    eventLog1.WriteEntry("Attempting to read the image 2");
-
+                                    SendBinaryMessage(imgStream);
                                 }
                             }
                             else
                             {
-                                eventLog1.WriteEntry("Attempting to read the image 3");
-
-                                byte[] msgNoImg = EncodeOutgoingMessage("No image!?");
-
-                                stream.Write(msgNoImg, 0, msgNoImg.Length);
-                                stream.Flush();
+                                SendMessage("Image not found!");
                             }
                         }
                         catch (Exception ex)
@@ -264,43 +246,6 @@ namespace TwainCTSI.WinService
             catch (Exception ex)
             {
                 eventLog1.WriteEntry("Error creating twain! " + ex.Message);
-            }
-            /////////////
-            try
-            {
-                var rc = twain.Open();
-
-                if (rc == ReturnCode.Success)
-                {
-                    var hit = twain.FirstOrDefault(s => string.Equals(s.Name, SAMPLE_SOURCE));
-                    if (hit == null)
-                    {
-                        eventLog1.WriteEntry("The sample source \"" + SAMPLE_SOURCE + "\" is not installed.");
-                        twain.Close();
-                    }
-                    else
-                    {
-                        rc = hit.Open();
-
-                        if (rc == ReturnCode.Success)
-                        {
-                            eventLog1.WriteEntry("Starting capture from the sample source...");
-                            rc = hit.Enable(SourceEnableMode.NoUI, false, IntPtr.Zero);
-                        }
-                        else
-                        {
-                            twain.Close();
-                        }
-                    }
-                }
-                else
-                {
-                    eventLog1.WriteEntry("Failed to open dsm with rc=" + rc);
-                }
-            }
-            catch (Exception ex)
-            {
-                eventLog1.WriteEntry("Error opening twain: " + ex.Message);
             }
         }
 
