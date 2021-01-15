@@ -17,6 +17,7 @@ using System.Threading.Tasks;
 
 using System.IO;
 using System.Drawing;
+using System.Drawing.Imaging;
 using vtortola.WebSockets;
 
 namespace TwainCTSI.WinService
@@ -42,6 +43,7 @@ namespace TwainCTSI.WinService
 
                 eventLog1.WriteEntry("Server has started on " + ip + " :" + port + " , Waiting for a connection...");
 
+                // Trenutno radi samo za 1. klijenta koji se nakaci...
                 client = server.AcceptWebSocketAsync(CancellationToken.None).Result;
 
                 eventLog1.WriteEntry("Client connected");
@@ -108,33 +110,48 @@ namespace TwainCTSI.WinService
             }
         }
 
-        void SendMessage(string msg)
-        {
-            using (var messageWriterStream = client.CreateMessageWriter(WebSocketMessageType.Text))
-            {
-                using (var sw = new StreamWriter(messageWriterStream, Encoding.UTF8))
-                {
-                    sw.WriteAsync(msg);
-                    eventLog1.WriteEntry($"Msg sent: {msg}");
-                }
-            }
-        }
-
-        async void SendBinaryMessage(Stream bytes)
+        void SendMessage(string msg, bool sleep = false)
         {
             try
             {
-                using (var messageWriter = client.CreateMessageWriter(WebSocketMessageType.Binary))
+                using (var messageWriterStream = client.CreateMessageWriter(WebSocketMessageType.Text))
                 {
-                    await bytes.CopyToAsync(messageWriter);
-                    eventLog1.WriteEntry($"Sending file!");
+                    using (var sw = new StreamWriter(messageWriterStream, Encoding.UTF8))
+                    {
+                        sw.WriteAsync(msg);
+
+                        // Kad je slika salje se dugo, a posto se ne koristi await
+                        // Ovo mu je da saceka malo pre nego sto zatvori stream na kraju using-a
+                        // Dodato samo da radi
+                        if (sleep) Thread.Sleep(2000);
+                    }
                 }
             }
             catch (Exception ex)
             {
-                eventLog1.WriteEntry($"SendBinaryMessage error: {ex.Message} \n {ex.StackTrace}");
+                eventLog1.WriteEntry($"Msg send exception: {ex.Message} - {ex.StackTrace}");
             }
         }
+
+
+        // Navodno ova websocket biblioteka moze da salje i binarne fajlove
+        // ali nisam uspeo da namestim, pa se salje base64 string
+
+        //void SendBinaryMessage(Stream bytes)
+        //{
+        //    try
+        //    {
+        //        using (var messageWriter = client.CreateMessageWriter(WebSocketMessageType.Binary))
+        //        {
+        //            bytes.CopyToAsync(messageWriter);
+        //            eventLog1.WriteEntry($"Sending file!");
+        //        }
+        //    }
+        //    catch (Exception ex)
+        //    {
+        //        eventLog1.WriteEntry($"SendBinaryMessage error: {ex.Message} \n {ex.StackTrace}");
+        //    }
+        //}
 
         static string _cmd;
         void DoTwainWork(string cmd)
@@ -217,7 +234,34 @@ namespace TwainCTSI.WinService
                                 if (_cmd == "imglen") SendMessage(imgStream.Length.ToString());
                                 else if (_cmd == "img")
                                 {
-                                    SendBinaryMessage(imgStream);
+                                    Image img = Image.FromStream(imgStream);
+
+                                    byte[] pngBytes = null;
+
+                                    using (MemoryStream stream = new MemoryStream())
+                                    {
+                                        img.Save(stream, ImageFormat.Png);
+                                        pngBytes = stream.ToArray();
+                                        var b64img = Convert.ToBase64String(pngBytes);
+                                        eventLog1.WriteEntry($"Lenb64: {b64img.Length}");
+                                        SendMessage("data:image/png;base64, " + b64img, true);
+                                    }
+
+                                    //Image img = null;
+                                    //var stream = e.GetNativeImageStream();
+                                    //if (stream != null)
+                                    //{
+                                    //    img = Image.FromStream(stream, );
+                                    //}
+
+                                    //using (var memoryStream = new MemoryStream())
+                                    //{
+                                    //    imgStream.CopyTo(memoryStream);
+                                    //    var imgBytes = memoryStream.ToArray();
+                                    //    var b64img = Convert.ToBase64String(imgBytes);
+
+                                    //    SendMessage("data:image/tiff;base64, " + b64img);
+                                    //}
                                 }
                             }
                             else

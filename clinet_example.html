@@ -2,9 +2,11 @@
 <html>
   <head> </head>
   <body>
-      <input type="text" id="txt">
+      <input type="text" id="txt" value="twain_img">
+      
       <button onclick="doSend(document.getElementById('txt').value)" type="button">Test</button>
-      <img id="scannedImage" />
+      <br />
+      <img id="scannedImage" style="width: 50vw;" />
     <script>
       var wsUri = "ws://127.0.0.1:8083";
       var ws = new WebSocket(wsUri);
@@ -19,11 +21,11 @@
       };
 
       ws.onmessage = function (e) {
-        console.log("RESPONSE: " + e.data);
-        if (e.data instanceof Blob) {
-          var objectURL = URL.createObjectURL(e.data);
-          console.log("Image received")
-          document.getElementById("scannedImage").src = objectURL;
+        let str = e.data + '';
+        console.log(str);
+        if (str.includes("data:image")) {
+          console.log("img received")
+          document.getElementById("scannedImage").src = str;          
         }
       };
 
